@@ -50,6 +50,7 @@ from transformers import (
     AutoTokenizer,
     PreTrainedModel,
     PreTrainedTokenizer,
+    PreTrainedTokenizerFast,
     get_linear_schedule_with_warmup,
 )
 
@@ -75,7 +76,7 @@ class TextDataset(Dataset):
     def __init__(self, tokenizer: PreTrainedTokenizer, args, file_path: str, block_size=512):
         assert os.path.isfile(file_path)
 
-        block_size = block_size - (tokenizer.max_len - tokenizer.max_len_single_sentence)
+        #block_size = block_size - (tokenizer.model_max_length - tokenizer.max_len_single_sentence)
 
         directory, filename = os.path.split(file_path)
         cached_features_file = os.path.join(
@@ -396,7 +397,7 @@ def train(args, train_dataset, model: PreTrainedModel, tokenizer: PreTrainedToke
                 logger.info(segment_ids)
                 logger.info("-" * 30 + " LABELS")
                 logger.info(labels)
-            outputs = model(inputs, masked_lm_labels=labels, position_ids=position_ids, token_type_ids=segment_ids) if args.mlm else model(inputs, labels=labels)
+            outputs = model(inputs, labels=labels, position_ids=position_ids, token_type_ids=segment_ids) if args.mlm else model(inputs, labels=labels)
             loss = outputs[0]  # model outputs are always tuple in transformers (see doc)
 
             if args.n_gpu > 1:
@@ -534,7 +535,7 @@ def evaluate(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, prefi
         labels = labels.to(args.device)
 
         with torch.no_grad():
-            outputs = model(inputs, masked_lm_labels=labels, position_ids=position_ids, token_type_ids=segment_ids) if args.mlm else model(inputs, labels=labels)
+            outputs = model(inputs, labels=labels, position_ids=position_ids, token_type_ids=segment_ids) if args.mlm else model(inputs, labels=labels)
             lm_loss = outputs[0]
             eval_loss += lm_loss.mean().item()
         nb_eval_steps += 1
@@ -815,9 +816,28 @@ def main():
         config.vocab_size *= 2
 
     if args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, cache_dir=args.cache_dir, config=config)
+        #tokenizer = AutoTokenizer.from_pretrained(args.tokenizer_name, cache_dir=args.cache_dir, config=config)
+        tokenizer = PreTrainedTokenizerFast(
+            tokenizer_file=args.tokenizer_name, unk_token="<unk>"
+        )
+        tokenizer.add_special_tokens(dict(
+            pad_token="[PAD]",
+            sep_token="[SEP]",
+            mask_token="[MASK]",
+            cls_token="[CLS]",
+        ))
+        config.vocab_size = len(tokenizer.vocab)
     elif args.model_name_or_path:
         tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, cache_dir=args.cache_dir, config=config)
+        tokenizer.unk_token = "<unk>"
+        if tokenizer.cls_token_id is None or tokenizer.cls_token_id == 0:
+            tokenizer.add_special_tokens(dict(
+                pad_token="[PAD]",
+                sep_token="[SEP]",
+                mask_token="[MASK]",
+                cls_token="[CLS]",
+            ))
+        config.vocab_size = len(tokenizer.vocab)
     else:
         raise ValueError(
             "You are instantiating a new tokenizer from scratch. This is not supported, but you can do it from another script, save it,"
@@ -835,10 +855,10 @@ def main():
         tokenizer.vocab.update(shifted_vocab)
 
     if args.block_size <= 0:
-        args.block_size = tokenizer.max_len
+        args.block_size = tokenizer.model_max_length
         # Our input block size will be the max possible for the model
     else:
-        args.block_size = min(args.block_size, tokenizer.max_len)
+        args.block_size = min(args.block_size, tokenizer.model_max_length)
 
     if args.model_name_or_path:
         model = AutoModelWithLMHead.from_pretrained(
