@@ -500,6 +500,7 @@ def evaluate(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, prefi
     logger.info("  Num examples = %d", len(eval_dataset))
     logger.info("  Batch size = %d", args.eval_batch_size)
     eval_loss = 0.0
+    eval_segs, eval_char = 0, 0
     nb_eval_steps = 0
     model.eval()
     mycounter = 0
@@ -516,7 +517,15 @@ def evaluate(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, prefi
             segment_ids = segment_ids.to(args.device)
         else:
             position_ids, segment_ids = None, None
+        assert args.mlm, "MB: hot-patched code currently assumes we're doing MLM!"
+        unmasked_inputs = batch.cpu().clone()
         inputs, labels = mask_tokens(batch, tokenizer, args, model) if args.mlm else (batch, batch)
+        masked_tokens = torch.where(
+            inputs == tokenizer.mask_token_id,
+            unmasked_inputs,
+            torch.zeros_like(inputs)
+        )
+        masked_tokens = masked_tokens[masked_tokens.nonzero(as_tuple=True)]
         if args.shift_special_tokens:
             shift_special_tokens(inputs, model.config.shift, args.special_token_indices)
         mycounter += 1
@@ -525,6 +534,9 @@ def evaluate(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, prefi
             logger.info("#" * 10 + " {} ".format(mycounter) + "#"*10)
             logger.info("-" * 30 + " INPUTS")
             logger.info(inputs)
+            logger.info("-" * 30 + " MASKED TOKENS")
+            logger.info(masked_tokens)
+            logger.info(tokenizer.convert_ids_to_tokens(masked_tokens.tolist()[:5]))
             logger.info("-" * 30 + " POSITIONS")
             logger.info(position_ids)
             logger.info("-" * 30 + " TOKENS")
@@ -537,13 +549,20 @@ def evaluate(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, prefi
         with torch.no_grad():
             outputs = model(inputs, labels=labels, position_ids=position_ids, token_type_ids=segment_ids) if args.mlm else model(inputs, labels=labels)
             lm_loss = outputs[0]
+            eval_segs += masked_tokens.size()[0]
+            eval_char += sum(
+                len(x) for x in tokenizer.convert_ids_to_tokens(masked_tokens.tolist())
+            )
             eval_loss += lm_loss.mean().item()
         nb_eval_steps += 1
 
     eval_loss = eval_loss / nb_eval_steps
     perplexity = torch.exp(torch.tensor(eval_loss))
+    perplexity_char = torch.exp(
+        torch.tensor(eval_loss * eval_segs / eval_char)
+    )
 
-    result = {"perplexity": perplexity}
+    result = {"perplexity": perplexity, "perplexity_char": perplexity_char}
 
     if args.eval_output_file is not None:
         output_eval_file = args.eval_output_file
