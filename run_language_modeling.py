@@ -550,9 +550,10 @@ def evaluate(args, model: PreTrainedModel, tokenizer: PreTrainedTokenizer, prefi
             outputs = model(inputs, labels=labels, position_ids=position_ids, token_type_ids=segment_ids) if args.mlm else model(inputs, labels=labels)
             lm_loss = outputs[0]
             eval_segs += masked_tokens.size()[0]
-            eval_char += sum(
-                len(x) for x in tokenizer.convert_ids_to_tokens(masked_tokens.tolist())
-            )
+            eval_char += len(
+                tokenizer.convert_tokens_to_string(
+                    tokenizer.convert_ids_to_tokens(masked_tokens.tolist())
+            )) + 1  # for the word-initial metaspace that is removed
             eval_loss += lm_loss.mean().item()
         nb_eval_steps += 1
 
